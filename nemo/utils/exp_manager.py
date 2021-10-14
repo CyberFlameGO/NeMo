@@ -84,6 +84,7 @@ class StepTimingParams:
     reduction: Optional[str] = "mean"
     # if positive, defines the size of a sliding window for computing mean
     buffer_size: Optional[int] = -1
+    interval: Optional[int] = 1
 
 
 @dataclass

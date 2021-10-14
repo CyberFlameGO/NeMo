@@ -34,18 +34,21 @@ class NamedTimer(object):
 
     _REDUCTION_TYPE = ["mean", "sum", "min", "max", "none"]
 
-    def __init__(self, reduction="mean", buffer_size=-1):
+    def __init__(self, reduction="mean", buffer_size=-1, interval=1):
         """
         Args:
             reduction (str): reduction over multiple timings of the same timer
                              (none - returns the list instead of a scalar)
             buffer_size (int): if positive, limits the number of stored measures per name
+            interval (int): timer measure and update interval
         """
         if reduction not in self._REDUCTION_TYPE:
             raise ValueError(f"Unknown reduction={reduction} please use one of {self._REDUCTION_TYPE}")
 
         self._reduction = reduction
         self._buffer_size = buffer_size
+        self._interval = interval
+        self._cur_step = 0
 
         self.reset()
 
@@ -76,6 +79,7 @@ class NamedTimer(object):
             self.timers = {}
         else:
             self.timers[name] = {}
+        self._cur_step = 0
 
     def start(self, name=""):
         """
@@ -87,15 +91,16 @@ class NamedTimer(object):
         timer_data = self.timers.get(name, {})
 
         if "start" in timer_data:
-            raise RuntimeError(f"Cannot start timer = '{name}' since it is already active")
+            if self._cur_step % self._interval == 0:
+                raise RuntimeError(f"Cannot start timer = '{name}' since it is already active")
+        else:
+            # synchronize pytorch cuda execution if supported
+            if torch.cuda.is_initialized():
+                torch.cuda.synchronize()
 
-        # synchronize pytorch cuda execution if supported
-        if torch.cuda.is_initialized():
-            torch.cuda.synchronize()
+            timer_data["start"] = time.time()
 
-        timer_data["start"] = time.time()
-
-        self.timers[name] = timer_data
+            self.timers[name] = timer_data
 
     def stop(self, name=""):
         """
@@ -104,25 +109,27 @@ class NamedTimer(object):
         Args:
             name (str): timer name to stop
         """
-        timer_data = self.timers.get(name, None)
-        if (timer_data is None) or ("start" not in timer_data):
-            raise RuntimeError(f"Cannot end timer = '{name}' since it is not active")
+        self._cur_step += 1
+        if (self._cur_step % self._interval) == 0:
+            timer_data = self.timers.get(name, None)
+            if (timer_data is None) or ("start" not in timer_data):
+                raise RuntimeError(f"Cannot end timer = '{name}' since it is not active")
 
-        # synchronize pytorch cuda execution if supported
-        if torch.cuda.is_initialized():
-            torch.cuda.synchronize()
+            # synchronize pytorch cuda execution if supported
+            if torch.cuda.is_initialized():
+                torch.cuda.synchronize()
 
-        # compute dt and make timer inactive
-        dt = time.time() - timer_data.pop("start")
+            # compute dt and make timer inactive
+            dt = time.time() - timer_data.pop("start")
 
-        # store dt
-        timer_data["dt"] = timer_data.get("dt", []) + [dt]
+            # store dt
+            timer_data["dt"] = timer_data.get("dt", []) + [dt]
 
-        # enforce buffer_size if positive
-        if self._buffer_size > 0:
-            timer_data["dt"] = timer_data["dt"][-self._buffer_size :]
+            # enforce buffer_size if positive
+            if self._buffer_size > 0:
+                timer_data["dt"] = timer_data["dt"][-self._buffer_size :]
 
-        self.timers[name] = timer_data
+            self.timers[name] = timer_data
 
     def active_timers(self):
         """
